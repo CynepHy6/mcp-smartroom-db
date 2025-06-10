@@ -1,0 +1,5 @@
+# Пример конфигурации подключений к БД
+
+db_name:
+  db_host_name.link: port
+  user_name: user_password

@@ -1,0 +1,3 @@
+#!/bin/bash
+cd /home/hy6/Code/mcp-smartroom-db
+exec /home/hy6/Code/mcp-smartroom-db/venv/bin/python /home/hy6/Code/mcp-smartroom-db/mcp-db-server.py "$@" 
