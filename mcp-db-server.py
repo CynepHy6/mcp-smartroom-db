@@ -373,8 +373,92 @@ class DatabaseManager:
                     "user": config["user"]
                 }
             }
+    def get_all_tables_schemas_direct(self, database: str) -> Dict[str, Any]:
+        """Получает схемы всех таблиц в указанной БД"""
+        if database not in self.connections:
+            return {
+                "success": False,
+                "error": f"БД {database} не найдена в конфигурации",
+                "database": database
+            }
 
+        try:
+            with self._get_connection(database) as conn:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    # Получаем все таблицы и их колонки
+                    cur.execute("""
+                    SELECT 
+                        table_name,
+                        column_name,
+                        data_type,
+                        is_nullable,
+                        column_default,
+                        character_maximum_length,
+                        numeric_precision,
+                        numeric_scale
+                    FROM information_schema.columns 
+                    WHERE table_schema = 'public'
+                    ORDER BY table_name, ordinal_position;
+                    """)
+                    columns_data = cur.fetchall()
 
+                    # Получаем индексы для всех таблиц
+                    cur.execute("""
+                    SELECT 
+                        tablename,
+                        indexname,
+                        indexdef 
+                    FROM pg_indexes 
+                    WHERE schemaname = 'public';
+                    """)
+                    indexes_data = cur.fetchall()
+
+                    # Группируем данные по таблицам
+                    tables = {}
+                    for row in columns_data:
+                        table_name = row["table_name"]
+                        if table_name not in tables:
+                            tables[table_name] = {
+                                "columns": [],
+                                "indexes": []
+                            }
+                        tables[table_name]["columns"].append({
+                            "column_name": row["column_name"],
+                            "data_type": row["data_type"],
+                            "is_nullable": row["is_nullable"],
+                            "column_default": row["column_default"],
+                            "character_maximum_length": row.get("character_maximum_length"),
+                            "numeric_precision": row.get("numeric_precision"),
+                            "numeric_scale": row.get("numeric_scale")
+                        })
+
+                    # Добавляем индексы
+                    for row in indexes_data:
+                        table_name = row["tablename"]
+                        if table_name not in tables:
+                            tables[table_name] = {
+                                "columns": [],
+                                "indexes": []
+                            }
+                        tables[table_name]["indexes"].append({
+                            "indexname": row["indexname"],
+                            "indexdef": row["indexdef"]
+                        })
+
+                    return {
+                        "success": True,
+                        "database": database,
+                        "tables": tables,
+                        "tables_count": len(tables)
+                    }
+
+        except Exception as e:
+            logger.error(f"Ошибка получения схем всех таблиц для БД {database}: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "database": database
+            }
 
 # Создаем экземпляр менеджера БД
 db_manager = DatabaseManager()
@@ -443,6 +527,20 @@ async def list_tools() -> list[Tool]:
                 },
                 "required": ["database"]
             }
+        ),
+        Tool(
+            name="get_all_tables_schemas",
+            description="Получить схемы всех таблиц в указанной БД",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "database": {
+                        "type": "string",
+                        "description": "Название БД"
+                    }
+                },
+                "required": ["database"]
+            }
         )
     ]
 
@@ -500,6 +598,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 )]
             
             result = db_manager.get_database_info_direct(database)
+            return [TextContent(
+                type="text",
+                text=json.dumps(result, ensure_ascii=False, indent=2, default=str)
+            )]
+        elif name == "get_all_tables_schemas":
+            database = arguments.get("database")
+            if not database:
+                return [TextContent(
+                    type="text",
+                    text="Ошибка: необходимо указать database"
+                )]
+            result = db_manager.get_all_tables_schemas_direct(database)
             return [TextContent(
                 type="text",
                 text=json.dumps(result, ensure_ascii=False, indent=2, default=str)
