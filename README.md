@@ -1,4 +1,4 @@
-# MCP сервер для работы с БД Skyeng Platform
+# MCP сервер для работы с БД
 
 Безопасный MCP (Model Context Protocol) сервер для работы с базами данных Skyeng Platform без передачи кредов в удаленное API.
 
