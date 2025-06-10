@@ -52,3 +52,4 @@ Thumbs.db
 .cache/ 
 mcp-db-server.log
 .env
+.pytest_cache/
