@@ -630,25 +630,20 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
 def show_help():
     """Показать справку"""
-    print("MCP сервер для работы с БД Skyeng Platform")
-    print()
+    print("MCP сервер для работы с БД Skyeng Platform\n")
     print("Использование:")
-    print("  mcp-skyeng-db                  - Запуск MCP сервера")
-    print("  mcp-skyeng-db --help          - Показать эту справку")
-    print("  mcp-skyeng-db --list-databases - Показать все БД")
-    print("  mcp-skyeng-db --test          - Тестировать подключения")
-    print()
+    print("  mcp-skyeng-db                 - Запуск MCP сервера")
+    print("  mcp-skyeng-db --help           - Показать эту справку")
+    print("  mcp-skyeng-db --list-databases - Показать все БД и статус подключения")
+    print("  mcp-skyeng-db --test           - Проверить подключения ко всем БД\n")
     print("Доступные инструменты MCP:")
-    print("  • execute_query    - Выполнить SELECT запрос")
-    print("  • get_table_schema - Получить схему таблицы")
-    print("  • list_databases   - Список всех БД")
-    print("  • get_database_info - Детальная информация о БД")
-    print()
+    print("  • execute_query         - Выполнить SELECT/EXPLAIN/WITH запрос к БД")
+    print("  • get_table_schema      - Получить схему таблицы (структура, индексы)")
+    print("  • list_databases        - Список всех доступных БД и их статус")
+    print("  • get_database_info     - Детальная информация о БД (размер, таблицы)")
+    print("  • get_all_tables_schemas- Получить схемы всех таблиц в БД\n")
     print("Конфигурация:")
-    print("  ~/.config/mcp-skyeng-db/.db.yaml - Настройки БД")
-    print()
-    print("Обновление:")
-    print("  mcp-skyeng-db-update - Обновить до последней версии")
+    print("  ~/.config/mcp-skyeng-db/.db.yaml - Настройки подключений к БД")
 
 async def main():
     """Запуск MCP сервера"""
