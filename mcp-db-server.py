@@ -38,6 +38,9 @@ class DatabaseManager:
     """Менеджер для работы с базами данных предметов"""
     
     def __init__(self, config_path: str = None):
+        # Получаем директорию скрипта
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        
         # Приоритет поиска конфигурации:
         # 1. Параметр config_path
         # 2. Переменная окружения MCP_DB_CONFIG
@@ -47,12 +50,12 @@ class DatabaseManager:
             self.config_path = config_path
         elif os.getenv("MCP_DB_CONFIG"):
             self.config_path = os.getenv("MCP_DB_CONFIG")
-        elif os.path.exists(".db.yaml"):
-            self.config_path = ".db.yaml"
+        elif os.path.exists(os.path.join(script_dir, ".db.yaml")):
+            self.config_path = os.path.join(script_dir, ".db.yaml")
         elif os.path.exists(os.path.expanduser("~/.config/mcp-skyeng-db/.db.yaml")):
             self.config_path = os.path.expanduser("~/.config/mcp-skyeng-db/.db.yaml")
         else:
-            self.config_path = ".db.yaml"  # Fallback
+            self.config_path = os.path.join(script_dir, ".db.yaml")  # Fallback
         self.connections: Dict[str, Dict] = {}
         self.schema_cache: Dict[str, Dict] = {}
         self._load_db_config()

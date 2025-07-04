@@ -1,3 +1,5 @@
 #!/bin/bash
-cd /home/hy6/Code/mcp-smartroom-db
-exec /home/hy6/Code/mcp-smartroom-db/venv/bin/python /home/hy6/Code/mcp-smartroom-db/mcp-db-server.py "$@" 
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+exec "$SCRIPT_DIR/venv/bin/python" "$SCRIPT_DIR/mcp-db-server.py" "$@"
