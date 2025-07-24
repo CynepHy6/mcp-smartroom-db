@@ -68,7 +68,7 @@ class DatabaseManager:
             with open(self.config_path, "r", encoding="utf-8") as f:
                 db_config = yaml.safe_load(f)
                 
-            # Теперь ключи это названия БД, а не предметы
+            # ключи это названия БД
             for db_name, db_info in db_config.items():
                 # Находим хост и порт
                 host = None
@@ -251,71 +251,7 @@ class DatabaseManager:
                 "execution_time": time.time() - start_time
             }
     
-    def get_table_schema_direct(self, table_name: str, database: str) -> Dict[str, Any]:
-        """Получает схему таблицы напрямую по БД"""
-        if database not in self.connections:
-            return {
-                "success": False,
-                "error": f"БД {database} не найдена в конфигурации",
-                "table_name": table_name,
-                "database": database
-            }
-        
-        cache_key = f"{database}:{table_name}"
-        
-        if cache_key in self.schema_cache:
-            return self.schema_cache[cache_key]
-        
-        schema_query = """
-        SELECT 
-            column_name,
-            data_type,
-            is_nullable,
-            column_default,
-            character_maximum_length,
-            numeric_precision,
-            numeric_scale
-        FROM information_schema.columns 
-        WHERE table_name = %s
-        ORDER BY ordinal_position;
-        """
-        
-        try:
-            with self._get_connection(database) as conn:
-                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                    cur.execute(schema_query, (table_name,))
-                    columns = [dict(row) for row in cur.fetchall()]
-                    
-                    # Получаем информацию о индексах
-                    indexes_query = """
-                    SELECT indexname, indexdef 
-                    FROM pg_indexes 
-                    WHERE tablename = %s;
-                    """
-                    cur.execute(indexes_query, (table_name,))
-                    indexes = [dict(row) for row in cur.fetchall()]
-                    
-                    schema_info = {
-                        "success": True,
-                        "table_name": table_name,
-                        "database": database,
-                        "columns": columns,
-                        "indexes": indexes,
-                        "cached_at": time.time()
-                    }
-                    
-                    self.schema_cache[cache_key] = schema_info
-                    return schema_info
-                    
-        except Exception as e:
-            logger.error(f"Ошибка получения схемы таблицы {table_name} в БД {database}: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "table_name": table_name,
-                "database": database
-            }
-    
+
     def get_database_info_direct(self, database: str) -> Dict[str, Any]:
         """Получает детальную информацию о БД напрямую"""
         if database not in self.connections:
@@ -376,8 +312,8 @@ class DatabaseManager:
                     "user": config["user"]
                 }
             }
-    def get_all_tables_schemas_direct(self, database: str) -> Dict[str, Any]:
-        """Получает схемы всех таблиц в указанной БД"""
+    def get_tables_schemas_direct(self, database: str, table_names: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Получает схемы указанных таблиц или всех таблиц в БД"""
         if database not in self.connections:
             return {
                 "success": False,
@@ -388,8 +324,16 @@ class DatabaseManager:
         try:
             with self._get_connection(database) as conn:
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                    # Получаем все таблицы и их колонки
-                    cur.execute("""
+                    # Формируем условие для фильтрации таблиц
+                    table_filter = ""
+                    params = []
+                    if table_names:
+                        placeholders = ','.join(['%s'] * len(table_names))
+                        table_filter = f" AND table_name IN ({placeholders})"
+                        params.extend(table_names)
+
+                    # Получаем колонки для указанных таблиц
+                    columns_query = f"""
                     SELECT 
                         table_name,
                         column_name,
@@ -400,20 +344,27 @@ class DatabaseManager:
                         numeric_precision,
                         numeric_scale
                     FROM information_schema.columns 
-                    WHERE table_schema = 'public'
+                    WHERE table_schema = 'public'{table_filter}
                     ORDER BY table_name, ordinal_position;
-                    """)
+                    """
+                    cur.execute(columns_query, params)
                     columns_data = cur.fetchall()
 
-                    # Получаем индексы для всех таблиц
-                    cur.execute("""
+                    # Получаем индексы для указанных таблиц
+                    indexes_filter = ""
+                    if table_names:
+                        placeholders = ','.join(['%s'] * len(table_names))
+                        indexes_filter = f" AND tablename IN ({placeholders})"
+                        
+                    indexes_query = f"""
                     SELECT 
                         tablename,
                         indexname,
                         indexdef 
                     FROM pg_indexes 
-                    WHERE schemaname = 'public';
-                    """)
+                    WHERE schemaname = 'public'{indexes_filter};
+                    """
+                    cur.execute(indexes_query, params if table_names else [])
                     indexes_data = cur.fetchall()
 
                     # Группируем данные по таблицам
@@ -452,15 +403,17 @@ class DatabaseManager:
                         "success": True,
                         "database": database,
                         "tables": tables,
-                        "tables_count": len(tables)
+                        "tables_count": len(tables),
+                        "requested_tables": table_names
                     }
 
         except Exception as e:
-            logger.error(f"Ошибка получения схем всех таблиц для БД {database}: {e}")
+            logger.error(f"Ошибка получения схем таблиц для БД {database}: {e}")
             return {
                 "success": False,
                 "error": str(e),
-                "database": database
+                "database": database,
+                "requested_tables": table_names
             }
 
 # Создаем экземпляр менеджера БД
@@ -492,21 +445,22 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
-            name="get_table_schema",
-            description="Получить схему таблицы",
+            name="get_tables_schemas",
+            description="Получить схемы указанных таблиц или всех таблиц в БД",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "table_name": {
-                        "type": "string",
-                        "description": "Название таблицы"
-                    },
                     "database": {
                         "type": "string",
                         "description": "Название БД"
+                    },
+                    "table_names": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Список названий таблиц (необязательно, если не указан - возвращает все таблицы)"
                     }
                 },
-                "required": ["table_name", "database"]
+                "required": ["database"]
             }
         ),
         Tool(
@@ -531,20 +485,7 @@ async def list_tools() -> list[Tool]:
                 "required": ["database"]
             }
         ),
-        Tool(
-            name="get_all_tables_schemas",
-            description="Получить схемы всех таблиц в указанной БД",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "database": {
-                        "type": "string",
-                        "description": "Название БД"
-                    }
-                },
-                "required": ["database"]
-            }
-        )
+
     ]
 
 @server.call_tool()
@@ -568,17 +509,17 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 text=json.dumps(result, ensure_ascii=False, indent=2, default=str)
             )]
         
-        elif name == "get_table_schema":
-            table_name = arguments.get("table_name")
+        elif name == "get_tables_schemas":
             database = arguments.get("database")
+            table_names = arguments.get("table_names")
             
-            if not table_name or not database:
+            if not database:
                 return [TextContent(
                     type="text",
-                    text="Ошибка: необходимо указать table_name и database"
+                    text="Ошибка: необходимо указать database"
                 )]
             
-            result = db_manager.get_table_schema_direct(table_name, database)
+            result = db_manager.get_tables_schemas_direct(database, table_names)
             return [TextContent(
                 type="text",
                 text=json.dumps(result, ensure_ascii=False, indent=2, default=str)
@@ -605,18 +546,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 type="text",
                 text=json.dumps(result, ensure_ascii=False, indent=2, default=str)
             )]
-        elif name == "get_all_tables_schemas":
-            database = arguments.get("database")
-            if not database:
-                return [TextContent(
-                    type="text",
-                    text="Ошибка: необходимо указать database"
-                )]
-            result = db_manager.get_all_tables_schemas_direct(database)
-            return [TextContent(
-                type="text",
-                text=json.dumps(result, ensure_ascii=False, indent=2, default=str)
-            )]
+
         
         else:
             return [TextContent(
@@ -641,10 +571,9 @@ def show_help():
     print("  mcp-skyeng-db --test           - Проверить подключения ко всем БД\n")
     print("Доступные инструменты MCP:")
     print("  • execute_query         - Выполнить SELECT/EXPLAIN/WITH запрос к БД")
-    print("  • get_table_schema      - Получить схему таблицы (структура, индексы)")
+    print("  • get_tables_schemas    - Получить схемы указанных таблиц или всех таблиц в БД")
     print("  • list_databases        - Список всех доступных БД и их статус")
-    print("  • get_database_info     - Детальная информация о БД (размер, таблицы)")
-    print("  • get_all_tables_schemas- Получить схемы всех таблиц в БД\n")
+    print("  • get_database_info     - Детальная информация о БД (размер, таблицы)\n")
     print("Конфигурация:")
     print("  ~/.config/mcp-skyeng-db/.db.yaml - Настройки подключений к БД")
 
