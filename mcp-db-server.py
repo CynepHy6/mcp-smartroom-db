@@ -18,7 +18,7 @@ import psycopg2
 import psycopg2.extras
 from mcp.server import Server
 from mcp.types import (
-    Resource, Tool, TextContent, CallToolRequest, 
+    Resource, Tool, TextContent, CallToolRequest,
     ListResourcesRequest, ListToolsRequest, ReadResourceRequest
 )
 import mcp.server.stdio
@@ -36,11 +36,11 @@ logger = logging.getLogger(__name__)
 
 class DatabaseManager:
     """Менеджер для работы с базами данных предметов"""
-    
+
     def __init__(self, config_path: str = None):
         # Получаем директорию скрипта
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        
+
         # Приоритет поиска конфигурации:
         # 1. Параметр config_path
         # 2. Переменная окружения MCP_DB_CONFIG
@@ -59,15 +59,15 @@ class DatabaseManager:
         self.connections: Dict[str, Dict] = {}
         self.schema_cache: Dict[str, Dict] = {}
         self._load_db_config()
-    
 
-    
+
+
     def _load_db_config(self):
         """Загружает конфигурацию подключений к БД"""
         try:
             with open(self.config_path, "r", encoding="utf-8") as f:
                 db_config = yaml.safe_load(f)
-                
+
             # ключи это названия БД
             for db_name, db_info in db_config.items():
                 # Находим хост и порт
@@ -75,17 +75,18 @@ class DatabaseManager:
                 port = None
                 user = None
                 password = None
-                
+
                 for key, value in db_info.items():
                     # Если значение числовое - это порт, ключ - хост
                     if isinstance(value, int):
                         host = key
                         port = value
                     # Если значение строковое - это пароль, ключ - пользователь
-                    elif isinstance(value, str):
+                    # Исключаем специальные ключи как block_store
+                    elif isinstance(value, str) and key not in ["block_store"]:
                         user = key
                         password = value
-                
+
                 if host and port and user and password:
                     self.connections[db_name] = {
                         "host": host,
@@ -97,16 +98,16 @@ class DatabaseManager:
                     logger.info(f"Загружена конфигурация для БД: {db_name}")
                 else:
                     logger.warning(f"Неполная конфигурация для БД {db_name}")
-                    
+
         except FileNotFoundError:
             logger.error(f"Файл конфигурации {self.config_path} не найден")
             raise
         except Exception as e:
             logger.error(f"Ошибка загрузки конфигурации: {e}")
             raise
-    
 
-    
+
+
     def _validate_query(self, query: str) -> bool:
         """Валидирует SQL запрос - запрещены только модифицирующие операции (INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, TRUNCATE, GRANT, REVOKE, EXEC, EXECUTE)"""
         query_clean = re.sub(r'--.*$', '', query, flags=re.MULTILINE)
@@ -130,14 +131,14 @@ class DatabaseManager:
             if re.search(rf'\\b{dangerous}\\b', query_clean):
                 return False
         return True
-    
+
     def _get_connection(self, db_name: str):
         """Получает подключение к БД"""
         if db_name not in self.connections:
             raise ValueError(f"БД {db_name} не найдена в конфигурации")
-        
+
         conn_config = self.connections[db_name]
-        
+
         try:
             conn = psycopg2.connect(
                 host=conn_config["host"],
@@ -151,35 +152,52 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Ошибка подключения к БД {db_name}: {e}")
             raise
-        
 
+
+
+    def _get_block_store_info(self, db_name: str) -> Dict[str, str]:
+        """Получает информацию о блок-сторе для указанной БД"""
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                db_config = yaml.safe_load(f)
+
+            if db_name in db_config and "block_store" in db_config[db_name]:
+                block_store_db = db_config[db_name]["block_store"]
+                return {
+                    "block_store_database": block_store_db,
+                    "block_store_description": "Блок-стор - хранилище ответов пользователей на задания, содержит данные о прогрессе обучения и попытках решения задач"
+                }
+        except Exception:
+            pass
+
+        return {}
 
     def list_databases(self) -> Dict[str, Dict]:
         """Возвращает список всех БД с информацией"""
         databases_info = {}
-        
+
         for db_name, config in self.connections.items():
             try:
                 with self._get_connection(db_name) as conn:
                     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                         # Получаем базовую информацию о БД
                         cur.execute("""
-                        SELECT 
+                        SELECT
                             current_database() as database_name,
                             current_user as current_user,
                             version() as version,
                             pg_database_size(current_database()) as size_bytes
                         """)
                         db_info = dict(cur.fetchone())
-                        
+
                         # Получаем количество таблиц
                         cur.execute("""
-                        SELECT COUNT(*) as tables_count 
-                        FROM information_schema.tables 
+                        SELECT COUNT(*) as tables_count
+                        FROM information_schema.tables
                         WHERE table_schema = 'public'
                         """)
                         tables_info = dict(cur.fetchone())
-                        
+
                         databases_info[db_name] = {
                             **db_info,
                             **tables_info,
@@ -188,9 +206,10 @@ class DatabaseManager:
                                 "database": config["database"],
                                 "user": config["user"]
                             },
-                            "available": True
+                            "available": True,
+                            **self._get_block_store_info(db_name)
                         }
-                        
+
             except Exception as e:
                 databases_info[db_name] = {
                     "available": False,
@@ -199,16 +218,17 @@ class DatabaseManager:
                         "host": config["host"],
                         "database": config["database"],
                         "user": config["user"]
-                    }
+                    },
+                    **self._get_block_store_info(db_name)
                 }
-        
+
         return databases_info
-    
+
     def execute_query_direct(self, query: str, database: str) -> Dict[str, Any]:
         """Выполняет SQL запрос к БД напрямую"""
         if not self._validate_query(query):
             raise ValueError("Запрос содержит недопустимые операции")
-        
+
         if database not in self.connections:
             return {
                 "success": False,
@@ -216,24 +236,24 @@ class DatabaseManager:
                 "database": database,
                 "execution_time": 0
             }
-        
+
         start_time = time.time()
-        
+
         try:
             with self._get_connection(database) as conn:
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                     cur.execute(query)
-                    
+
                     if cur.description:
                         results = cur.fetchall()
                         results = [dict(row) for row in results]
                     else:
                         results = []
-                    
+
                     execution_time = time.time() - start_time
-                    
+
                     logger.info(f"Запрос к БД {database} выполнен за {execution_time:.3f}с")
-                    
+
                     return {
                         "success": True,
                         "data": results,
@@ -241,7 +261,7 @@ class DatabaseManager:
                         "execution_time": execution_time,
                         "database": database
                     }
-                    
+
         except Exception as e:
             logger.error(f"Ошибка выполнения запроса к БД {database}: {e}")
             return {
@@ -250,7 +270,7 @@ class DatabaseManager:
                 "database": database,
                 "execution_time": time.time() - start_time
             }
-    
+
 
     def get_database_info_direct(self, database: str) -> Dict[str, Any]:
         """Получает детальную информацию о БД напрямую"""
@@ -260,33 +280,33 @@ class DatabaseManager:
                 "error": f"БД {database} не найдена в конфигурации",
                 "database": database
             }
-        
+
         config = self.connections[database]
-        
+
         try:
             with self._get_connection(database) as conn:
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                     # Основная информация
                     cur.execute("""
-                    SELECT 
+                    SELECT
                         current_database() as database_name,
                         current_user as current_user,
                         version() as version,
                         pg_database_size(current_database()) as size_bytes
                     """)
                     db_info = dict(cur.fetchone())
-                    
+
                     # Список таблиц
                     cur.execute("""
-                    SELECT 
+                    SELECT
                         tablename,
                         pg_size_pretty(pg_total_relation_size('public.'||tablename)) as size
-                    FROM pg_tables 
+                    FROM pg_tables
                     WHERE schemaname = 'public'
                     ORDER BY pg_total_relation_size('public.'||tablename) DESC
                     """)
                     tables = [dict(row) for row in cur.fetchall()]
-                    
+
                     return {
                         "success": True,
                         "database": database,
@@ -297,9 +317,10 @@ class DatabaseManager:
                             "host": config["host"],
                             "database": config["database"],
                             "user": config["user"]
-                        }
+                        },
+                        **self._get_block_store_info(database)
                     }
-                    
+
         except Exception as e:
             logger.error(f"Ошибка получения информации о БД {database}: {e}")
             return {
@@ -310,7 +331,8 @@ class DatabaseManager:
                     "host": config["host"],
                     "database": config["database"],
                     "user": config["user"]
-                }
+                },
+                **self._get_block_store_info(database)
             }
     def get_tables_schemas_direct(self, database: str, table_names: Optional[List[str]] = None) -> Dict[str, Any]:
         """Получает схемы указанных таблиц или всех таблиц в БД"""
@@ -334,7 +356,7 @@ class DatabaseManager:
 
                     # Получаем колонки для указанных таблиц
                     columns_query = f"""
-                    SELECT 
+                    SELECT
                         table_name,
                         column_name,
                         data_type,
@@ -343,7 +365,7 @@ class DatabaseManager:
                         character_maximum_length,
                         numeric_precision,
                         numeric_scale
-                    FROM information_schema.columns 
+                    FROM information_schema.columns
                     WHERE table_schema = 'public'{table_filter}
                     ORDER BY table_name, ordinal_position;
                     """
@@ -355,13 +377,13 @@ class DatabaseManager:
                     if table_names:
                         placeholders = ','.join(['%s'] * len(table_names))
                         indexes_filter = f" AND tablename IN ({placeholders})"
-                        
+
                     indexes_query = f"""
-                    SELECT 
+                    SELECT
                         tablename,
                         indexname,
-                        indexdef 
-                    FROM pg_indexes 
+                        indexdef
+                    FROM pg_indexes
                     WHERE schemaname = 'public'{indexes_filter};
                     """
                     cur.execute(indexes_query, params if table_names else [])
@@ -491,69 +513,69 @@ async def list_tools() -> list[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Обработка вызовов инструментов"""
-    
+
     try:
         if name == "execute_query":
             query = arguments.get("query")
             database = arguments.get("database")
-            
+
             if not query or not database:
                 return [TextContent(
                     type="text",
                     text="Ошибка: необходимо указать query и database"
                 )]
-            
+
             result = db_manager.execute_query_direct(query, database)
             return [TextContent(
                 type="text",
                 text=json.dumps(result, ensure_ascii=False, indent=2, default=str)
             )]
-        
+
         elif name == "get_tables_schemas":
             database = arguments.get("database")
             table_names = arguments.get("table_names")
-            
+
             if not database:
                 return [TextContent(
                     type="text",
                     text="Ошибка: необходимо указать database"
                 )]
-            
+
             result = db_manager.get_tables_schemas_direct(database, table_names)
             return [TextContent(
                 type="text",
                 text=json.dumps(result, ensure_ascii=False, indent=2, default=str)
             )]
-        
+
         elif name == "list_databases":
             result = db_manager.list_databases()
             return [TextContent(
                 type="text",
                 text=json.dumps(result, ensure_ascii=False, indent=2, default=str)
             )]
-        
+
         elif name == "get_database_info":
             database = arguments.get("database")
-            
+
             if not database:
                 return [TextContent(
                     type="text",
                     text="Ошибка: необходимо указать database"
                 )]
-            
+
             result = db_manager.get_database_info_direct(database)
             return [TextContent(
                 type="text",
                 text=json.dumps(result, ensure_ascii=False, indent=2, default=str)
             )]
 
-        
+
         else:
             return [TextContent(
                 type="text",
                 text=f"Неизвестный инструмент: {name}"
             )]
-    
+
     except Exception as e:
         logger.error(f"Ошибка выполнения инструмента {name}: {e}")
         return [TextContent(
@@ -580,11 +602,11 @@ def show_help():
 async def main():
     """Запуск MCP сервера"""
     import sys
-    
+
     # Обработка аргументов командной строки
     if len(sys.argv) > 1:
         arg = sys.argv[1]
-        
+
         if arg in ['--help', '-h']:
             show_help()
             return
@@ -627,17 +649,17 @@ async def main():
             print(f"Неизвестный аргумент: {arg}")
             print("Используйте --help для справки")
             return
-    
+
     # Запуск MCP сервера
     logger.info("Запуск MCP сервера для работы с БД Skyeng Platform")
-    
+
     # Проверяем доступные БД при запуске
     try:
         available_dbs = list(db_manager.connections.keys())
         logger.info(f"Загружено БД: {len(available_dbs)}")
     except Exception as e:
         logger.error(f"Ошибка при проверке доступных БД: {e}")
-    
+
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,
