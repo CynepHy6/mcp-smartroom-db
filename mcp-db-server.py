@@ -58,6 +58,9 @@ class DatabaseManager:
             self.config_path = os.path.join(script_dir, ".db.yaml")  # Fallback
         self.connections: Dict[str, Dict] = {}
         self.schema_cache: Dict[str, Dict] = {}
+        # Таймаут подключения (секунды), можно переопределить через MCP_DB_CONNECT_TIMEOUT
+        self.connect_timeout = int(os.getenv("MCP_DB_CONNECT_TIMEOUT", "2"))
+        logger.info(f"Таймаут подключения к БД установлен: {self.connect_timeout} сек")
         self._load_db_config()
 
 
@@ -146,7 +149,7 @@ class DatabaseManager:
                 database=conn_config["database"],
                 user=conn_config["user"],
                 password=conn_config["password"],
-                connect_timeout=10
+                connect_timeout=self.connect_timeout
             )
             return conn
         except Exception as e:
