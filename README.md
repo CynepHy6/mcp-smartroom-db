@@ -54,6 +54,12 @@ export MCP_DB_CONNECT_TIMEOUT=1
 export MCP_DB_CONNECT_TIMEOUT=3
 ```
 
+Инструмент `list_databases` опрашивает все БД параллельно (до 16 одновременных подключений по умолчанию). Число потоков можно задать так:
+
+```bash
+export MCP_DB_LIST_MAX_WORKERS=8
+```
+
 ### 3. Тестирование
 
 ```bash

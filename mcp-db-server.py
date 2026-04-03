@@ -10,7 +10,8 @@ import os
 import re
 import hashlib
 import time
-from typing import Dict, List, Optional, Any, Union
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, List, Optional, Any, Union, Tuple
 import asyncio
 import yaml
 
@@ -175,57 +176,78 @@ class DatabaseManager:
 
         return {}
 
+    def _fetch_one_database_for_list(self, db_name: str) -> Tuple[str, Dict]:
+        """Собирает информацию по одной БД для list_databases (для вызова из пула потоков)."""
+        config = self.connections[db_name]
+        try:
+            with self._get_connection(db_name) as conn:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute("""
+                    SELECT
+                        current_database() as database_name,
+                        current_user as current_user,
+                        version() as version,
+                        pg_database_size(current_database()) as size_bytes
+                    """)
+                    db_info = dict(cur.fetchone())
+
+                    cur.execute("""
+                    SELECT COUNT(*) as tables_count
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public'
+                    """)
+                    tables_info = dict(cur.fetchone())
+
+                    entry = {
+                        **db_info,
+                        **tables_info,
+                        "connection_config": {
+                            "host": config["host"],
+                            "database": config["database"],
+                            "user": config["user"]
+                        },
+                        "available": True,
+                        **self._get_block_store_info(db_name)
+                    }
+                    return (db_name, entry)
+
+        except Exception as e:
+            entry = {
+                "available": False,
+                "error": str(e),
+                "connection_config": {
+                    "host": config["host"],
+                    "database": config["database"],
+                    "user": config["user"]
+                },
+                **self._get_block_store_info(db_name)
+            }
+            return (db_name, entry)
+
     def list_databases(self) -> Dict[str, Dict]:
-        """Возвращает список всех БД с информацией"""
-        databases_info = {}
+        """Возвращает список всех БД с информацией (параллельные подключения)."""
+        db_names = list(self.connections.keys())
+        if not db_names:
+            return {}
 
-        for db_name, config in self.connections.items():
-            try:
-                with self._get_connection(db_name) as conn:
-                    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                        # Получаем базовую информацию о БД
-                        cur.execute("""
-                        SELECT
-                            current_database() as database_name,
-                            current_user as current_user,
-                            version() as version,
-                            pg_database_size(current_database()) as size_bytes
-                        """)
-                        db_info = dict(cur.fetchone())
+        max_workers_env = os.getenv("MCP_DB_LIST_MAX_WORKERS")
+        if max_workers_env:
+            max_workers = max(1, int(max_workers_env))
+        else:
+            max_workers = min(16, len(db_names))
 
-                        # Получаем количество таблиц
-                        cur.execute("""
-                        SELECT COUNT(*) as tables_count
-                        FROM information_schema.tables
-                        WHERE table_schema = 'public'
-                        """)
-                        tables_info = dict(cur.fetchone())
+        databases_info: Dict[str, Dict] = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(self._fetch_one_database_for_list, name): name
+                for name in db_names
+            }
+            for future in as_completed(futures):
+                db_name, entry = future.result()
+                databases_info[db_name] = entry
 
-                        databases_info[db_name] = {
-                            **db_info,
-                            **tables_info,
-                            "connection_config": {
-                                "host": config["host"],
-                                "database": config["database"],
-                                "user": config["user"]
-                            },
-                            "available": True,
-                            **self._get_block_store_info(db_name)
-                        }
-
-            except Exception as e:
-                databases_info[db_name] = {
-                    "available": False,
-                    "error": str(e),
-                    "connection_config": {
-                        "host": config["host"],
-                        "database": config["database"],
-                        "user": config["user"]
-                    },
-                    **self._get_block_store_info(db_name)
-                }
-
-        return databases_info
+        # Порядок ключей как в конфиге (а не порядок завершения запросов)
+        return {name: databases_info[name] for name in db_names}
 
     def execute_query_direct(self, query: str, database: str) -> Dict[str, Any]:
         """Выполняет SQL запрос к БД напрямую"""
