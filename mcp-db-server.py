@@ -74,33 +74,17 @@ class DatabaseManager:
             with open(self.config_path, "r", encoding="utf-8") as f:
                 db_config = yaml.safe_load(f)
 
+            templates = db_config.get("_templates", {}) if isinstance(db_config, dict) else {}
+
             # ключи это названия БД
             for db_name, db_info in db_config.items():
-                # Находим хост и порт
-                host = None
-                port = None
-                user = None
-                password = None
+                if db_name == "_templates":
+                    continue
 
-                for key, value in db_info.items():
-                    # Если значение числовое - это порт, ключ - хост
-                    if isinstance(value, int):
-                        host = key
-                        port = value
-                    # Если значение строковое - это пароль, ключ - пользователь
-                    # Исключаем специальные ключи как block_store
-                    elif isinstance(value, str) and key not in ["block_store"]:
-                        user = key
-                        password = value
+                normalized_config = self._normalize_db_config_entry(db_name, db_info, templates)
 
-                if host and port and user and password:
-                    self.connections[db_name] = {
-                        "host": host,
-                        "port": port,
-                        "database": db_name,  # Используем название БД как database
-                        "user": user,
-                        "password": password
-                    }
+                if normalized_config:
+                    self.connections[db_name] = normalized_config
                     logger.info(f"Загружена конфигурация для БД: {db_name}")
                 else:
                     logger.warning(f"Неполная конфигурация для БД {db_name}")
@@ -111,6 +95,87 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Ошибка загрузки конфигурации: {e}")
             raise
+
+    def _parse_legacy_db_config_entry(self, db_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Парсит старый формат конфига вида host:port и user:password."""
+        host = None
+        port = None
+        user = None
+        password = None
+        reserved_keys = ["block_store", "template", "host", "port", "user", "password"]
+
+        for key, value in db_info.items():
+            if isinstance(value, int) and key not in reserved_keys:
+                host = key
+                port = value
+            elif isinstance(value, str) and key not in reserved_keys:
+                user = key
+                password = value
+
+        return {
+            "host": host,
+            "port": port,
+            "user": user,
+            "password": password,
+            "block_store": db_info.get("block_store")
+        }
+
+    def _normalize_db_config_entry(
+        self,
+        db_name: str,
+        db_info: Dict[str, Any],
+        templates: Dict[str, Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Нормализует запись БД из старого или шаблонного формата."""
+        if not isinstance(db_info, dict):
+            raise ValueError(f"Некорректная конфигурация БД {db_name}: ожидается объект")
+
+        template_name = db_info.get("template")
+        template_config = {}
+        if template_name:
+            template_config = templates.get(template_name)
+            if not isinstance(template_config, dict):
+                raise ValueError(f"Шаблон {template_name} для БД {db_name} не найден")
+
+        legacy_config = self._parse_legacy_db_config_entry(db_info)
+
+        def pick_config_value(field_name: str):
+            direct_value = db_info.get(field_name)
+            if direct_value is not None:
+                return direct_value
+
+            legacy_value = legacy_config.get(field_name)
+            if legacy_value is not None:
+                return legacy_value
+
+            return template_config.get(field_name)
+
+        resolved_config = {
+            **template_config,
+            **legacy_config,
+            "host": pick_config_value("host"),
+            "port": pick_config_value("port"),
+            "user": pick_config_value("user"),
+            "password": pick_config_value("password"),
+            "block_store": pick_config_value("block_store"),
+        }
+
+        if not all([
+            resolved_config.get("host"),
+            resolved_config.get("port"),
+            resolved_config.get("user"),
+            resolved_config.get("password")
+        ]):
+            return None
+
+        return {
+            "host": resolved_config["host"],
+            "port": resolved_config["port"],
+            "database": db_name,
+            "user": resolved_config["user"],
+            "password": resolved_config["password"],
+            "block_store": resolved_config.get("block_store")
+        }
 
 
 
@@ -170,18 +235,13 @@ class DatabaseManager:
 
     def _get_block_store_info(self, db_name: str) -> Dict[str, str]:
         """Получает информацию о блок-сторе для указанной БД"""
-        try:
-            with open(self.config_path, "r", encoding="utf-8") as f:
-                db_config = yaml.safe_load(f)
-
-            if db_name in db_config and "block_store" in db_config[db_name]:
-                block_store_db = db_config[db_name]["block_store"]
-                return {
-                    "block_store_database": block_store_db,
-                    "block_store_description": "Блок-стор - хранилище ответов пользователей на задания, содержит данные о прогрессе обучения и попытках решения задач"
-                }
-        except Exception:
-            pass
+        connection_config = self.connections.get(db_name, {})
+        block_store_db = connection_config.get("block_store")
+        if block_store_db:
+            return {
+                "block_store_database": block_store_db,
+                "block_store_description": "Блок-стор - хранилище ответов пользователей на задания, содержит данные о прогрессе обучения и попытках решения задач"
+            }
 
         return {}
 

@@ -35,12 +35,48 @@ cp .db.yaml.example .db.yaml
 nano .db.yaml
 ```
 
-Пример содержимого `.db.yaml`:
+Пример содержимого `.db.yaml` в старом формате:
 ```yaml
 db_name:
   db_host_name.link: port
   user_name: user_password
 ```
+
+Рекомендуемый формат для тестинговых БД:
+```yaml
+_templates:
+  test_y10_pg11:
+    host: test-y10-local.skyeng.link
+    port: 5432
+    user: ya_testing
+    password: your_password
+  test_y10_pg15:
+    host: test-y10-local.skyeng.link
+    port: 5532
+    user: ya_testing
+    password: your_password
+
+skysmart_english_auto_y10:
+  template: test_y10_pg11
+
+trm_auto_y10:
+  template: test_y10_pg11
+
+teacher_catalog_auto_y10:
+  template: test_y10_pg15
+
+crm_auto_y10:
+  template: test_y10_pg15
+```
+
+При необходимости можно переопределить отдельные поля поверх шаблона:
+```yaml
+teacher_catalog_auto_y10:
+  template: test_y10_pg11
+  port: 5532
+```
+
+Оба формата поддерживаются: старый плоский формат остается рабочим для обратной совместимости.
 
 ### 2. Настройка таймаута подключения (опционально)
 
@@ -89,7 +125,7 @@ python3 mcp-db-server.py
 - Только чтение для обычных БД: разрешены только немодифицирующие запросы
 - Тестовые БД вида `*_auto_<env>`: разрешены любые запросы, если имя БД заканчивается на шаблон `_auto_\w\d+`
 - Локальные креды: пароли хранятся только локально в `.db.yaml`
-- Валидация запросов: фильтрация опасных операций
+- Валидация запросов: фильтрация опасных операций и поддержка шаблонов `_templates` в конфиге
 - Логирование: все запросы записываются в `mcp-db-server.log`
 
 ## 📁 Структура проекта

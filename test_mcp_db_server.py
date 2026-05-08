@@ -1,6 +1,7 @@
 import pytest
 import importlib.util
 import sys
+import textwrap
 
 # Импортируем DatabaseManager из файла с дефисом в имени
 spec = importlib.util.spec_from_file_location("mcp_db_server", "./mcp-db-server.py")
@@ -13,6 +14,12 @@ DatabaseManager = mcp_db_server.DatabaseManager
 def db_manager():
     # Можно передать фиктивный путь, т.к. для теста нужен только _validate_query
     return DatabaseManager(config_path=None)
+
+
+def create_db_manager_with_config(tmp_path, config_text):
+    config_path = tmp_path / "db.yaml"
+    config_path.write_text(textwrap.dedent(config_text), encoding="utf-8")
+    return DatabaseManager(config_path=str(config_path))
 
 def test_validate_query_allows_complex_select(db_manager):
     query = '''
@@ -70,3 +77,80 @@ def test_validate_query_allows_any_query_for_auto_databases(db_manager, database
 )
 def test_is_write_allowed_database(db_manager, database_name, expected):
     assert db_manager._is_write_allowed_database(database_name) is expected
+
+
+def test_load_db_config_supports_legacy_format(tmp_path):
+    manager = create_db_manager_with_config(
+        tmp_path,
+        """
+        legacy_db:
+          legacy-host.skyeng.link: 5432
+          legacy_user: secret
+          block_store: legacy_block_store
+        """
+    )
+
+    assert manager.connections["legacy_db"] == {
+        "host": "legacy-host.skyeng.link",
+        "port": 5432,
+        "database": "legacy_db",
+        "user": "legacy_user",
+        "password": "secret",
+        "block_store": "legacy_block_store",
+    }
+
+
+def test_load_db_config_supports_templates_and_overrides(tmp_path):
+    manager = create_db_manager_with_config(
+        tmp_path,
+        """
+        _templates:
+          test_y10_pg11:
+            host: test-y10-local.skyeng.link
+            port: 5432
+            user: ya_testing
+            password: secret
+            block_store: common_block_store
+
+        skysmart_english_auto_y10:
+          template: test_y10_pg11
+
+        teacher_catalog_auto_y10:
+          template: test_y10_pg11
+          port: 5532
+          block_store: custom_block_store
+        """
+    )
+
+    assert manager.connections["skysmart_english_auto_y10"] == {
+        "host": "test-y10-local.skyeng.link",
+        "port": 5432,
+        "database": "skysmart_english_auto_y10",
+        "user": "ya_testing",
+        "password": "secret",
+        "block_store": "common_block_store",
+    }
+    assert manager.connections["teacher_catalog_auto_y10"] == {
+        "host": "test-y10-local.skyeng.link",
+        "port": 5532,
+        "database": "teacher_catalog_auto_y10",
+        "user": "ya_testing",
+        "password": "secret",
+        "block_store": "custom_block_store",
+    }
+
+
+def test_load_db_config_raises_for_unknown_template(tmp_path):
+    config_path = tmp_path / "db.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            broken_db:
+              template: missing_template
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Шаблон missing_template для БД broken_db не найден"):
+        DatabaseManager(config_path=str(config_path))
