@@ -38,6 +38,8 @@ logger = logging.getLogger(__name__)
 class DatabaseManager:
     """Менеджер для работы с базами данных предметов"""
 
+    WRITE_ALLOWED_DATABASE_PATTERN = re.compile(r"_auto_\w\d+$")
+
     def __init__(self, config_path: str = None):
         # Получаем директорию скрипта
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -112,8 +114,15 @@ class DatabaseManager:
 
 
 
-    def _validate_query(self, query: str) -> bool:
+    def _is_write_allowed_database(self, database: str) -> bool:
+        """Определяет тестовые БД, где разрешены модифицирующие запросы."""
+        return bool(self.WRITE_ALLOWED_DATABASE_PATTERN.search(database))
+
+    def _validate_query(self, query: str, database: str = "") -> bool:
         """Валидирует SQL запрос - запрещены только модифицирующие операции (INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, TRUNCATE, GRANT, REVOKE, EXEC, EXECUTE)"""
+        if self._is_write_allowed_database(database):
+            return True
+
         query_clean = re.sub(r'--.*$', '', query, flags=re.MULTILINE)
         query_clean = re.sub(r'/\*.*?\*/', '', query_clean, flags=re.DOTALL)
         query_clean = query_clean.strip().upper()
@@ -251,7 +260,7 @@ class DatabaseManager:
 
     def execute_query_direct(self, query: str, database: str) -> Dict[str, Any]:
         """Выполняет SQL запрос к БД напрямую"""
-        if not self._validate_query(query):
+        if not self._validate_query(query, database):
             raise ValueError("Запрос содержит недопустимые операции")
 
         if database not in self.connections:
@@ -475,13 +484,13 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="execute_query",
-            description="Выполнить SELECT запрос к БД",
+            description="Выполнить SQL запрос к БД. Для обычных БД разрешено только чтение, для тестовых *_auto_<env> разрешены любые запросы",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "SQL запрос (только SELECT, WITH, EXPLAIN)"
+                        "description": "SQL запрос. Для обычных БД только SELECT, WITH, EXPLAIN; для БД вида *_auto_y10/*_auto_s2 любые запросы"
                     },
                     "database": {
                         "type": "string",
@@ -617,7 +626,7 @@ def show_help():
     print("  mcp-skyeng-db --list-databases - Показать все БД и статус подключения")
     print("  mcp-skyeng-db --test           - Проверить подключения ко всем БД\n")
     print("Доступные инструменты MCP:")
-    print("  • execute_query         - Выполнить SELECT/EXPLAIN/WITH запрос к БД")
+    print("  • execute_query         - Выполнить SQL запрос к БД; для *_auto_y10/*_auto_s2 и подобных тестовых БД разрешены любые запросы")
     print("  • get_tables_schemas    - Получить схемы указанных таблиц или всех таблиц в БД")
     print("  • list_databases        - Список всех доступных БД и их статус")
     print("  • get_database_info     - Детальная информация о БД (размер, таблицы)\n")
